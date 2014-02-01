@@ -14,7 +14,7 @@ import (
 	"encoding/binary"
 	"flag"
 	"fmt"
-	"github.com/prataprc/btree"
+	"github.com/prataprc/gobtree"
 	"os"
 )
 

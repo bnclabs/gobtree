@@ -12,7 +12,7 @@ package main
 import (
 	"flag"
 	"fmt"
-	"github.com/prataprc/btree"
+	"github.com/prataprc/gobtree"
 	"os"
 	"time"
 )

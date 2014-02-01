@@ -10,7 +10,7 @@
 package main
 
 import (
-	"github.com/prataprc/btree"
+	"github.com/prataprc/gobtree"
 	"log"
 	"os"
 	"time"

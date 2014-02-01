@@ -11,7 +11,7 @@ package main
 
 import (
 	"bytes"
-	"github.com/prataprc/btree"
+	"github.com/prataprc/gobtree"
 	"log"
 	"os"
 	"sort"
