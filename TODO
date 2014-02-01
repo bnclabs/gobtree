@@ -1,0 +1,40 @@
+1. right now every reader is expected to instantiate a Store data-structure
+   which will open a new instance of the index/kvfile for reading.
+
+2. when number of nodes in leaf-cache exceeds `MaxLeafCache`, figure out a
+   cache eviction algorithm is efficient for btree.
+
+3. I am not sure locking caches for intermediate nodes and leaf nodes for
+   readers will have impact on scalability (especially in cases of
+   large number of cores).
+
+4. at present count of all entries under a sub-tree or even under the root tree
+   had to be computed by walking down all the leaf nodes under the sub-tree.
+   can we include another field called `count` inside the intermediate node's
+   structure ?
+
+5. define Range() API.
+
+6. right now, remove works only for individual entries identified by
+   {key,docid} tuple, modify its specification to remove all entries
+   identiefied by {key}.
+
+7. lookup() and other traversal apis that use channel to return back the
+   result to caller can used buffered-channel to avoid blocking on mvQ.
+
+8. Long outstanding reads can block snapshots being flushed and stales nodes
+   reclaimed.
+
+9. Optimize flushSnapshot() to flush only leaf nodes. And periodically flush
+   the entire cache for intermediate nodes. This could mean that the in-memory
+   snapshot reference for reads will be ahead of on-disk snapshot reference.
+
+Coding guidelines
+
+1. Using _ assignment to avoid unsided imports.
+
+2. Avoid using fmt.* in test cases, instead use t.Error(), t.Errorf() etc ...
+
+3. Don't name test functions with `_`, use camelCase.
+
+4. panic(err) is sufficient, don't need to do panic(err.Error())

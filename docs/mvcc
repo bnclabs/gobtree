@@ -1,0 +1,22 @@
+1. When all readers and writers are in the same application, we can serialise
+   writes and writes can do copy-on-write while mutating data. 
+
+   a. In append only mode I guess we don't have to do anything else since older
+      version of the data is always present. 
+      What happens when compaction kicks in ? When do we decide to switch to
+      compacted file ?
+
+   b. If we don't use append-only mode, then we have to make sure that there
+      are no outstanding reads before reclaiming the stale-blocks.
+
+2. Writing handled by one application, but there are can be multiple 
+   applications accessing data for reading. The complexities are similar to
+   (1.) but we need to synchronize across application while switching to
+   compacted file or reclaiming stale-blocks.
+
+3. Allowing multiple writes. I believe in case of couchdb this is allowed and
+   handled through revisions.
+   
+Previously, I used to think that all of the above is MVCC. Please let me know
+if above understanding is correct, also can you give some details on how the
+system is sychronized while switching to compacted file ?

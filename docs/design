@@ -1,0 +1,389 @@
+Introduction
+------------
+
+A btree is a self balancing tree that starts from root node traverse through
+intermediate nodes to desired leaf node. It is the leaf node that contains an
+index of key value pairs.
+
+Leaf-node:
+            K1  K2  K3  K4  K5 .... Kn
+          V1  V2  V3  V4  v5  V6 .... Vn+1
+
+- K1,V1; K2,V2 ... Kn,Vn; are key,value pairs that are indexed in sort order
+  such that K1 <= K2 <= K3 <= ... Kn.
+
+- Values V1 ... Vn are typically row-ids in SQL databases and in NoSQL
+  databased they are, like keys, typically stored as JSON data.
+
+- Vn+1 is null in our case, but as per B+Tree definition Vn+1 points to the
+  location of next leaf node in the sort order. We are not using this
+  feature because of MVCC, which does copy-on-write changing the location of
+  leaf nodes for every insert/remove and this mutation will cascade all the way
+  back to the first leaf node.
+
+Intermediate-node:
+
+            K1  K2  K3  K4  K5 .... Kn
+          V1  V2  V3  V4  V5  V6 .... Vn+1
+
+- The sole purpose of intermediate node is to traverse to the correct leaf node
+  searching for value, using the supplied key. So, V1, V2, ... Vn are references
+  to location of child nodes. Let us say, if the intermediate node has Vn+1
+  values, there are Vn+1 child.
+
+- Traversing the intermediate node is implemented using the following rule, if
+  K is the supplied key then,
+    if K < K1 traverse through V1 child
+    if K < K2 traverse through V2 child
+    ...
+    if K < Kn traverse through Vn child
+    otherwise traverse through Vn+1 child
+
+
+Couchbase secondary Index:
+--------------------------
+
+We will take the above general ideas, modify them with suitable data structures
+to cater to our needs of secondary indexes,
+
+- 25K ops per second.
+- Multi version concurrency control to avoid locking due to large number of
+  concurrent readers.
+- Data structures and storage design that should be friendly for both HDD
+  (spinning drives) and SSD (flash based).
+- Configurable level of caching so that for high performing index we can add
+  more memory and avoid disk access while reading.
+- Crash only design.
+
+Crash only design:
+------------------
+
+  Crash only design allows random crash of indexing application, and/or nodes
+  running the indexing application, without corrupting the on disk data
+  structures. But crash recovery is not included as part of its scope, we
+  can use external techniques like sequence numbering and logging for crash 
+  recovery.
+
+  The safest and most trusted method to allow crash only design is by
+  appending data into disk-file - always. But this, when combined with MVCC and
+  Btree ideas could lead to a blow up of file size containing lots of stale
+  nodes that can be recovered only by compaction.
+
+  We assume that secondary indexes are not as critical as primary data store
+  and since couchbase has a replication topology random crashes will not be
+  a bottle neck for continued availability of secondary indexes.
+
+  Hence we forgo append-only design. By this what we mean is we will reuse
+  stale nodes as much as possible and avoid appending new nodes. But there
+  will be corner cases, like when a large index suddenly go through a burst of
+  entry removals, which can lead to un-recovered stale nodes.
+
+Document-id:
+------------
+
+    A general btree structure contain Key,Value pairs K1,V1;K2,V2;...;Kn,Vn;
+where keys are JSON values indexed in sort order. In our case, `keys` also
+contain document-id pointing to the primary document that actually emitted
+the seconday key,value pair. The following are the reasoning to add
+document-id as part of the btree indexing,
+
+- Unlike primary document store, keys are not unique. So a key,value lookup
+  will be much faster if similar keys are further sorted using document-ids.
+
+- To support sophisticated views, containing map-reduce written in Javascript,
+  we may have to remove the old key,value entry in the secondary index before
+  updating a new key,value entry due to document mutations.
+
+Splits and rebalance:
+---------------------
+
+    I don't forsee that splits and rebalance in our version of btree will be
+fundamentally different from a generic btree implementation. But when we
+add C0-C1 trees to do log-structured-merges, the C0 in memory tree will follow
+the general split and rebalance rules but the C1 on disk tree will slightly be
+different.
+
+File storage:
+-------------
+
+Every index is maintained using a pair of files, 
+- one for storing keys and document-ids, called `kdfile`.
+- another for storing the btree structure, called `indexfile`.
+
+`kdfile`
+--------
+
+- contains keys and document-ids that are always stored in append only mode.
+
+- for every new insert of (key,docid,value) tuple, `key` and `docid` parts
+  will be appended into the `kdfile`.
+
+- but we don't bother to remove keys and docids when an index entry is removed.
+
+- values are always stored in the leaf nodes, so they are not appended into
+  `kdfile`.
+
+- `kdfile` is primarily used while traversing intermediate nodes.
+
+`indexfile`
+-----------
+
+Index file is organised into head, freelist and btree nodes.
+
+- head contains the reference to root node, details about btree structure like
+  btree page size, disk block size, free-list size, CRC for freelist and
+  sequence number of index mutation.
+
+- reference to root node is 64-bit file-position.
+
+- free-list is an array of N number of 64 bit file-positions that point to
+  stale nodes or newly appended nodes within the index file.
+
+- BTree nodes (also called as pages), in our case BTree nodes can follow 
+  different data structure for intermediate nodes and leaf nodes.
+
+Btree structure:
+----------------
+
+Our btree structures are similar to a general btree structure with couple of
+ceveats.
+
+- Like mentioned above we store docid as part of keys, so when we say
+  K1,K2,...,Kn we also mean docids that are stored and sorted along with it.
+
+- Intermediate nodes follow a data structure that is different from leaf
+  nodes.
+
+Intermediate nodes,
+
+  - contains 64bit size that specify number of keys stored in the node, that
+    is, if size is `N` then there are N keys, N docids and N+1 child nodes.
+
+  - keys and docids are file position reference into the `kdfile`.
+
+  - child nodes are file position reference into the `indexfile`.
+
+  - based on above rules, an intermediate node of disk size 4KB can store 169
+    entries of keys and 170 child references.
+
+  - it is possible to do binary search while traversing intermediate nodes.
+
+Leaf nodes,
+
+  - contains 64bit size that specifies number of keys stored in the node, that
+    is, if size is `N` then there are N keys, N docids and N values.
+
+  - keys, docids, values are all stored within the leaf node, unlike
+    intermediate nodes, this leads to variable length entries and since leaf
+    nodes are of constant size, will mean that every leaf node will contain
+    variable number of entries.
+
+  - a leaf node of 4KB size can typically store 32 entries, assuming
+    key,value,docid can be compressed into 256 bytes.
+
+  - unlike btree we have to scan each entry in the leaf node, we cannot do
+    binary search due to variable length of each entry.
+
+Multi version concurrency control:
+----------------------------------
+
+MVCC is used to allow single writer and multiple readers using copy-on-write
+and timestamping.
+
+- inserts and deletes are two APIs that will lead to index mutation.
+
+- at any given time there can be only one outstanding insert or delete, this
+  is accomplished using a writer lock or a blocking channel.
+
+- every node fetch will go through a MVCC version of fetch, that will
+  first check wether the node is available in commitQ,
+  then in intermediate-cache and then in leaf-cache; more on commitQ later.
+
+- once a node is fetched, a new copy is made, a free block from disk is popped
+  from the free-list and assigned to the new copy.
+
+- once the write transaction is complete an MVCC insert or delete will
+  generate a collection of copied-and-modifed btree nodes and a collection
+  of stalenodes - called a snapshot.
+
+- after an MVCC transaction, the new snapshot generates a new root node with a
+  new file position on-the-disk. The snapshot can be immediately flushed into
+  the disk or we can accumulate these snapshots in memory.
+
+- typically MVCC snapshots are accumulated in memory and periodically flushed
+  into the disk based on number of transactions, read-your-own-write triggers
+  and/or timeouts.
+
+- note that reads are always from the latest snapshot in the disk and in the
+  case of periodic flushing there will be a mild in-consistency between writes
+  and reads.
+
+- commitQ is used to accumate the in-memory snapshots and an mvQ is used to
+  maintain the order of these snapshots, mvQ also contains the timestamp of
+  when the snapshot was created.
+
+- when a snapshot flush is triggered, an optimised commitQ is flushed into the
+  disk making the disk-snapshot upto date with the in-memory snapshot. CommitQ
+  is merged with read cache and in memory root reference is atomically updated.
+
+- accessQ is used to timestamp every access, both reads and writes into the
+  index tree are timestamped. In the case of read access, root reference must
+  be read only after acquiring a new access-timestamp.
+
+- since there could be outstanding reads that are still referring to some
+  stalenodes, we use the accessQ to detect stale nodes with timestamp less
+  than outstanding reads and reclaim only those nodes into the free-list.
+  stale nodes that are still referred by outstanding reads will be reclaimed
+  during next flush.
+
+A note on stale block reclamation (out-dated FIXME),
+
+  Flushing a disk snapshot will happen only after a write access is released.
+
+  Once the disk snapshot is flushed, in-memory root reference will be updated
+  and then a new timestamp will be acquired from MVCC controller and updated as
+  the latest root's timestamp. Root reference must be updated first before
+  acquiring root's timestamp.
+
+  Meanwhile, reads will continue accessing the old snapshot acquiring its own
+  access-timestamps.
+
+  Reclaimation process of stalenodes will start when ever the minimum value of
+  access-timestamp from accessQ is greater than root's timestamp. Reclamation
+  process will loop through the mvQ collecting stale blocks whose timestamps
+  are less than root's timestamp.
+
+  Reclaimed stale blocks are added back to the freelist and persisted on disk
+  during the next flush.
+
+A note on crash only,
+
+  In our case crash only is gauranteed only when intermediate nodes are
+  flushed after leaf nodes, free-list is flushed into disk only after
+  intermediate nodes and head block is flushed only after freelist is flushed.
+
+  When we say flush we mean that data is persisted on the disk. Since this
+  can be un-reliable due to drive-type or its configuration, our crash only
+  design is little flakey.
+
+  If crash only design is important we can enable O_SYNC and O_DIRECT at the
+  expense of performance.
+
+Log structured merge
+--------------------
+
+We could use ideas from log structured merge. There will be two btrees one is
+an in memory version called C0 tree and the other is disk based version called
+C1 tree. Our btree for secondary index, explained above, can be considered as
+C1 tree for log-structured-merge.
+
+In our case we prefer to maintain C0 tree only for inserts and deletes. Both
+of them are logged in a btree structure sorted using the key and document-id.
+Periodically we scoop away a portion of C0 tree, which is presorted, and do a
+merge sort with C1 tree.
+
+Since C0 is pre-sorted we just need to sequentially walk through the C1 tree
+based on the range of mutations from C0 tree, doing inserts and deletes. Every
+time a part of C0 tree is merged with C1 tree a new snapshot is created which
+can then be accumulated in memory or flushed immediately to the disk.
+
+All reads will happen on the C1 tree and could mean that there will be delay
+in consistency, and we can expect better performance if this delay is large.
+
+Multi page leaf nodes:
+----------------------
+
+This idea is a variant, similar to SBtree, where leaf nodes are flushed and
+retrived from disk as multi-page block.
+
+If leaf nodes are stored as multipage blocks, an intermediate node of size
+4KB can refer upto 170 leaf nodes. If leaf node is of size 4KB as well, a
+multipage in this scenario means that all leaf nodes, all 170 of them,
+that are referred by the same intermediate node will be sequentially stored
+as 170*4 KB of leaf nodes.
+
+Having multi-page blocks can help in following scenarios,
+
+- range queries can be faster since leaf nodes are going to be sequentially
+  stored as multi-page block.
+
+- when C0 tree from LSM is merged with C1 tree, and when the entries to be
+  merged are colocated in the same or neighbouring leaf nodes, it will lead
+  to notable performance improvement.
+
+- when the index file is built from scratch.
+
+The ramifications of using multi-page blocks are,
+
+- since we maintain our intermediate nodes as single page and leaf nodes as
+  multipage, we will end up maintaining two freelist, one for intermediate nodes
+  and another for leaf nodes.
+
+- MVCC for leaf nodes had to be done on multi-page blocks, not on individual
+  leaf nodes, this means that any changes to individual leaf node (individual
+  leaf node that map to single 4KB page) will lead to a copy-on-write of the
+  entire multi-page block that contain the leaf node.
+
+- above point also means inserts and deletes can be a costly operation if they
+  are spaced far away between leaf nodes.
+
+
+Cache control
+-------------
+
+                    Programming is an art of caching data
+                                                - unknown
+
+In our case MVCC and caching are the two central ideas that provide
+performance.
+
+Mutations in index lead to multiple snapshots of btree.
+
+And consistency is the point where we update the primary root reference to
+point to the root node of the latest snapshot.
+
+Reads are always from the latest snapshot persisted on the disk.
+
+So, between performance and persistence (where persistence lead to consistency)
+cache is the point of contention.
+
+We have three different types of cache.
+
+- cache of intermediate nodes, all intermediate nodes are cached and there are
+  no upper limit on this.
+
+- cache of leaf nodes, a limited set of leaf nodes can be cached and the limit
+  is configurable.
+
+- cache of keys and docids referred by intermediate nodes, there is no upper
+  limit for this cache.
+
+Every time mutations happen, one or more of the above mentioned cache needs
+to be mutated as well - to add or remove cache entries. And we have four
+different methods to do this,
+
+- mutual exclusion, when ever read or write transaction is accessing the cache
+  we do an exclusive lock on the cache data-structure. With large number of
+  readers this will lead to lock contentions.
+
+- rwmutex, read-locks won't block other reads but write-locks will succeed
+  only when there are no outstanding read locks and once a write-lock succeeds
+  it has got exclusive access to the data structure. This will reduce the lock
+  contention but can lead to write starvation.
+
+- copy-on-write, we can apply MVCC on cache data structures as well, but for
+  large indexes with several hundred thousands of intermediate nodes and/or
+  millions of keys and docids it will take un-acceptable time lapse while
+  doing copy-on-write.
+
+- ping-pong caches, there will always be two copies of the same cache,
+  where one will constantly be updated, without any locks, as and when new
+  snapshots are created, while the other will be used for read-only. When
+  in-memory snapshot is flushed to disk the copies are swapped, made consistent
+  relative to each other and the whole process is repeated again. This method
+  will need 2x memory to cache `x` amount of data.
+
+feature request:
+
+1. Do a segmented free-list to make sure that all stale nodes get to be 
+   tracked.
