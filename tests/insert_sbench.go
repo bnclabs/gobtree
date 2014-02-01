@@ -12,7 +12,7 @@ package main
 import (
 	"flag"
 	"fmt"
-	"github.com/couchbaselabs/indexing/btree"
+	"github.com/prataprc/btree"
 	"os"
 	"time"
 )

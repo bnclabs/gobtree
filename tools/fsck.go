@@ -14,7 +14,7 @@ import (
 	"encoding/binary"
 	"flag"
 	"fmt"
-	"github.com/couchbaselabs/indexing/btree"
+	"github.com/prataprc/btree"
 	"os"
 )
 

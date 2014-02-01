@@ -10,7 +10,7 @@
 package main
 
 import (
-	"github.com/couchbaselabs/indexing/btree"
+	"github.com/prataprc/btree"
 	"log"
 	"os"
 	"time"

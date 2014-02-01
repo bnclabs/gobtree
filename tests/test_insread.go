@@ -11,7 +11,7 @@ package main
 
 import (
 	"bytes"
-	"github.com/couchbaselabs/indexing/btree"
+	"github.com/prataprc/btree"
 	"log"
 	"os"
 	"sort"
