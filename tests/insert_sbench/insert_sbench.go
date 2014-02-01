@@ -53,7 +53,7 @@ func main() {
 	for i := 0; i < factor; i++ {
 		for j := 0; j < count; j++ {
 			k, v := keys[j], values[j]
-			k.Id = (i * count) + j
+			k.Id = int64((i * count) + j)
 			bt.Insert(k, v)
 		}
 		fmt.Println("Done ", time.Now().UnixNano()/1000000, (i+1)*count)
@@ -70,7 +70,7 @@ func main() {
 	for i := 0; i < factor; i++ {
 		for j := 0; j < count; j += 3 {
 			k := keys[j]
-			k.Id = (i * count) + j
+			k.Id = int64((i * count) + j)
 			bt.Remove(k)
 			bt.Drain()
 			bt.Check()
@@ -82,7 +82,7 @@ func main() {
 		}
 		for j := 1; j < count; j += 3 {
 			k := keys[j]
-			k.Id = (i * count) + j
+			k.Id = int64((i * count) + j)
 			bt.Remove(k)
 			bt.Drain()
 			bt.Check()
@@ -94,7 +94,7 @@ func main() {
 		}
 		for j := 2; j < count; j += 3 {
 			k := keys[j]
-			k.Id = (i * count) + j
+			k.Id = int64((i * count) + j)
 			bt.Remove(k)
 			bt.Drain()
 			bt.Check()
@@ -107,7 +107,7 @@ func main() {
 		fmt.Println("Done ", time.Now().UnixNano()/1000000, (i+1)*count)
 	}
 	bt.Drain()
-	bt.Stats()
+	bt.Stats(false)
 	fmt.Println("Count", bt.Count())
 	bt.Close()
 }
